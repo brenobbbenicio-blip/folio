@@ -4,10 +4,6 @@ node_modules/
 .grok/
 .tanstack/
 screenshots/
-attachments/
-agentes/
-github-starred/
-.codex/
 dist/
 .output/
 *.log
