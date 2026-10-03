@@ -107,16 +107,30 @@ function csvCell(value: string): string {
   return value;
 }
 
-export function archiveFiles(docs: ArchiveDoc[]): { path: string; text: string }[] {
+export type ZipParts = {
+  models?: boolean;
+  sources?: boolean;
+  index?: boolean;
+  improvements?: boolean;
+  gaps?: boolean;
+};
+
+function partOn(opts: ZipParts | undefined, key: keyof ZipParts): boolean {
+  return opts?.[key] !== false;
+}
+
+export function archiveFiles(docs: ArchiveDoc[], opts?: ZipParts): { path: string; text: string }[] {
   const files: { path: string; text: string }[] = [];
   const indexRows: string[][] = [];
   const gaps: string[] = [];
   const improvements: string[] = ["# Melhorias", ""];
   for (const doc of docs) {
     const base = slug(doc.filename.replace(/\.pdf$|\.md$/i, "")) || doc.id;
-    files.push({ path: `fontes/${base}.fiel.md`, text: doc.faithful });
-    files.push({ path: `fontes/${base}.leitura.md`, text: doc.cleanupUndone ? doc.faithful : doc.reading });
-    if (!doc.quality.integral) {
+    if (partOn(opts, "sources")) {
+      files.push({ path: `fontes/${base}.fiel.md`, text: doc.faithful });
+      files.push({ path: `fontes/${base}.leitura.md`, text: doc.cleanupUndone ? doc.faithful : doc.reading });
+    }
+    if (partOn(opts, "gaps") && !doc.quality.integral) {
       gaps.push(`- ${doc.filename}: leitura não integral. Páginas sem texto: ${doc.quality.emptyPages.join(", ") || "não marcadas"}. OCR: ${doc.quality.needsOcr.join(", ") || "nenhuma página indicada"}.`);
     }
     for (const act of doc.acts) {
@@ -124,7 +138,7 @@ export function archiveFiles(docs: ArchiveDoc[]): { path: string; text: string }
       const rito = fieldValue(act.fields, "rito");
       const fase = fieldValue(act.fields, "fase");
       const path = `modelos/${slug(classe)}/${slug(rito)}/${slug(fase)}/${slug(act.id)}.md`;
-      files.push({ path, text: templateMarkdown(act) });
+      if (partOn(opts, "models")) files.push({ path, text: templateMarkdown(act) });
       indexRows.push([
         act.id,
         act.template.title,
@@ -143,65 +157,73 @@ export function archiveFiles(docs: ArchiveDoc[]): { path: string; text: string }
         act.duplicateOf ?? "",
         act.variantOf.join(" "),
         act.documentId,
-      ]);
-      for (const item of act.fields) {
-        if (item.value === UNKNOWN) gaps.push(`- ${act.id} · ${item.label}: ${UNKNOWN}. Origem: ${item.origin}.`);
+      ].map((cell, index) => (index === 13 && !partOn(opts, "models") ? "" : cell)));
+      if (partOn(opts, "gaps")) {
+        for (const item of act.fields) {
+          if (item.value === UNKNOWN) gaps.push(`- ${act.id} · ${item.label}: ${UNKNOWN}. Origem: ${item.origin}.`);
+        }
+        if (act.nature === "extrato") gaps.push(`- ${act.id}: extrato de publicação. A decisão integral não foi reconstruída.`);
       }
-      if (act.nature === "extrato") gaps.push(`- ${act.id}: extrato de publicação. A decisão integral não foi reconstruída.`);
-      improvements.push(`## ${act.id} · ${act.title}`, "");
-      improvements.push("| Problema | Trecho e origem | Alteração proposta | Justificativa | Prioridade |");
-      improvements.push("| --- | --- | --- | --- | --- |");
-      for (const item of act.improvements) {
-        improvements.push(
-          `| ${item.kind}: ${item.problem} | ${item.excerpt || "—"} (${item.origin}) | ${item.proposal} | ${item.reason} | ${item.priority} |`,
-        );
+      if (partOn(opts, "improvements")) {
+        improvements.push(`## ${act.id} · ${act.title}`, "");
+        improvements.push("| Problema | Trecho e origem | Alteração proposta | Justificativa | Prioridade |");
+        improvements.push("| --- | --- | --- | --- | --- |");
+        for (const item of act.improvements) {
+          improvements.push(
+            `| ${item.kind}: ${item.problem} | ${item.excerpt || "—"} (${item.origin}) | ${item.proposal} | ${item.reason} | ${item.priority} |`,
+          );
+        }
+        improvements.push("");
       }
-      improvements.push("");
     }
   }
-  const header = ["id", "titulo", "natureza", "classe", "rito", "fase", "tipo", "assunto", "exercicio", "eleicao", "revisao", "origem", "paginas", "arquivo", "duplicata_de", "variantes", "id_documento"];
-  files.push({
-    path: "indice.csv",
-    text: [header, ...indexRows].map((row) => row.map(csvCell).join(",")).join("\n") + "\n",
-  });
-  files.push({
-    path: "indice.json",
-    text: JSON.stringify(
-      docs.map((doc) => ({
-        id: doc.id,
-        arquivo: doc.filename,
-        pdf: doc.hasPdf,
-        qualidade: doc.quality,
-        preservado: doc.preserved,
-        atos: doc.acts.map((act) => ({
-          id: act.id,
-          natureza: act.nature,
-          titulo: act.title,
-          paginas: act.pdfPages,
-          paginasImpressas: act.printedPages,
-          idDocumento: act.documentId,
-          processos: act.cnj,
-          voz: act.voice,
-          revisao: act.review,
-          aviso: act.warning,
-          duplicataDe: act.duplicateOf,
-          variantes: act.variantOf,
-          campos: act.fields,
-          modelo: { titulo: act.template.title, campos: act.template.fields, limites: act.template.limits, pendencias: act.template.pending },
+  if (partOn(opts, "index")) {
+    const header = ["id", "titulo", "natureza", "classe", "rito", "fase", "tipo", "assunto", "exercicio", "eleicao", "revisao", "origem", "paginas", "arquivo", "duplicata_de", "variantes", "id_documento"];
+    files.push({
+      path: "indice.csv",
+      text: [header, ...indexRows].map((row) => row.map(csvCell).join(",")).join("\n") + "\n",
+    });
+    files.push({
+      path: "indice.json",
+      text: JSON.stringify(
+        docs.map((doc) => ({
+          id: doc.id,
+          arquivo: doc.filename,
+          pdf: doc.hasPdf,
+          qualidade: doc.quality,
+          preservado: doc.preserved,
+          atos: doc.acts.map((act) => ({
+            id: act.id,
+            natureza: act.nature,
+            titulo: act.title,
+            paginas: act.pdfPages,
+            paginasImpressas: act.printedPages,
+            idDocumento: act.documentId,
+            processos: act.cnj,
+            voz: act.voice,
+            revisao: act.review,
+            aviso: act.warning,
+            duplicataDe: act.duplicateOf,
+            variantes: act.variantOf,
+            campos: act.fields,
+            modelo: { titulo: act.template.title, campos: act.template.fields, limites: act.template.limits, pendencias: act.template.pending },
+          })),
         })),
-      })),
-      null,
-      2,
-    ),
-  });
-  files.push({ path: "relatorio-melhorias.md", text: improvements.join("\n") });
-  files.push({
-    path: "relatorio-lacunas.md",
-    text: ["# Lacunas", "", gaps.length ? gaps.join("\n") : "Nenhuma lacuna registrada.", ""].join("\n"),
-  });
+        null,
+        2,
+      ),
+    });
+  }
+  if (partOn(opts, "improvements")) files.push({ path: "relatorio-melhorias.md", text: improvements.join("\n") });
+  if (partOn(opts, "gaps")) {
+    files.push({
+      path: "relatorio-lacunas.md",
+      text: ["# Lacunas", "", gaps.length ? gaps.join("\n") : "Nenhuma lacuna registrada.", ""].join("\n"),
+    });
+  }
   return files;
 }
 
-export function archiveZip(docs: ArchiveDoc[]): Uint8Array {
-  return zipStore(archiveFiles(docs));
+export function archiveZip(docs: ArchiveDoc[], opts?: ZipParts): Uint8Array {
+  return zipStore(archiveFiles(docs, opts));
 }

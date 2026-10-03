@@ -1,20 +1,25 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Newsreader", "Iowan Old Style", Palatino, Georgia, serif;
+  --font-sans: "Source Sans 3", "Source Sans Pro", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Newsreader", "Iowan Old Style", Palatino, Georgia, serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
 
-  --color-bg: #141210;
-  --color-surface: #1e1b17;
-  --color-surface-2: #2a261f;
-  --color-fg: #f3efe6;
-  --color-muted: #a3988a;
+  --color-bg: #12110e;
+  --color-surface: #1c1a16;
+  --color-surface-2: #26231e;
+  --color-fg: #f4f0e8;
+  --color-muted: #9c9488;
   --color-line: #3a342c;
-  --color-accent: #d4652f;
+  --color-accent: #e0703a;
   --color-accent-fg: #1a100b;
+  --color-paper: #f6f3ec;
+  --color-ink: #1c1915;
+  --color-warn: #e0a15a;
+  --color-ok: #8ea584;
 
-  --radius-sm: 0.375rem;
-  --radius-md: 0.75rem;
+  --radius-sm: 0.5rem;
+  --radius-md: 0.85rem;
 }
 
 @layer base {
