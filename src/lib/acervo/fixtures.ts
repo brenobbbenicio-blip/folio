@@ -68,5 +68,5 @@ export function fictionalArchive(): ArchiveDoc[] {
       reading: `<!-- página 1 -->\n\nDESPACHO\n\nProcesso 0600030-51.2024.6.14.0008\n\n${common}\n\nIntime-se.\n\nDESPACHO\n\nProcesso 0600031-36.2024.6.14.0008\n\n${common}\n\nCite-se.\n\nDESPACHO\n\nProcesso 0600030-51.2024.6.14.0008\n\n${common}\n\nIntime-se.\n`,
     }),
   ];
-  return linkDuplicates(docs);
+  return linkDuplicates(docs).map((doc) => ({ ...doc, example: true }));
 }

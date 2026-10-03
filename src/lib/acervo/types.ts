@@ -93,6 +93,8 @@ export type ArchiveDoc = {
   preserved: Preserved;
   acts: Act[];
   history: { label: string; acts: Act[] }[];
+  /** Peça de demonstração. Não entra no acervo guardado neste aparelho. */
+  example?: boolean;
 };
 
 export type IngestInput = {

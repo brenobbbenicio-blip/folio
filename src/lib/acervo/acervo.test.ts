@@ -8,6 +8,7 @@ import { dehyphenateAllowed } from "./hyphen.ts";
 import { fieldValue } from "./classify.ts";
 import { ingestDocument, linkDuplicates, mergeWithNext, splitAct } from "./pipeline.ts";
 import { archiveZip } from "./zip.ts";
+import { keepable, shouldWrite } from "./vault.ts";
 import { UNKNOWN } from "./types.ts";
 
 const P1 = "0600001-23.2026.6.14.0002";
@@ -185,4 +186,14 @@ test("dividir reclassifica o trecho e não herda a classe do outro", () => {
   assert.equal(fieldValue(split.acts[1].fields, "classe"), "prestação de contas eleitorais");
   assert.equal(fieldValue(split.acts[1].fields, "eleicao"), "2024");
   assert.equal(split.acts[1].cnj.includes(P1), false);
+});
+
+test("exemplo não apaga o acervo guardado", () => {
+  const real = doc("ato.md", `DESPACHO\n\nProcesso ${P1}\n\nIntime-se.\n`);
+  const example = { ...doc("ficticio.md", `DESPACHO\n\nProcesso ${P2}\n\nIntime-se.\n`), example: true as const };
+  assert.equal(keepable([real, example]).length, 1);
+  assert.equal(keepable([real, example])[0].filename, "ato.md");
+  assert.equal(shouldWrite([example]), false);
+  assert.equal(shouldWrite([real, example]), true);
+  assert.equal(shouldWrite([]), true);
 });

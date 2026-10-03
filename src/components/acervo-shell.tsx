@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bookmark,
   Check,
@@ -35,6 +35,7 @@ import {
 import type { Act, ArchiveDoc, Improvement } from "@/lib/acervo/types";
 import { UNKNOWN } from "@/lib/acervo/types";
 import { archiveZip, type ZipParts } from "@/lib/acervo/zip";
+import { clearVault, keepable, loadVault, saveVault } from "@/lib/acervo/vault";
 import { saveBinaryFile, saveTextFile } from "@/lib/save-text-file";
 
 type View =
@@ -144,6 +145,43 @@ export function AcervoShell() {
   const [saved, setSaved] = useState<string[]>([]);
   const [zipParts, setZipParts] = useState<Required<ZipParts>>({ models: true, sources: true, index: true, improvements: true, gaps: true });
   const [prefNote, setPrefNote] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
+  const [vaultState, setVaultState] = useState<"ok" | "sem-pdf" | "falha" | null>(null);
+
+  useEffect(() => {
+    let cancel = false;
+    loadVault()
+      .then(({ docs: stored, pdfs }) => {
+        if (cancel) return;
+        if (stored.length) {
+          for (const pdf of pdfs) rememberPdf(pdf.id, pdf.data);
+          setDocs((current) => {
+            const fresh = current.filter((doc) => !stored.some((item) => item.id === doc.id));
+            return linkDuplicates([...fresh, ...stored]);
+          });
+          setNote("Acervo recuperado neste aparelho.");
+        }
+      })
+      .catch(() => {
+        if (!cancel) setNote("Este navegador não abriu o acervo guardado.");
+      })
+      .finally(() => {
+        if (!cancel) setReady(true);
+      });
+    return () => {
+      cancel = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!ready) return;
+    const timer = setTimeout(() => {
+      void saveVault(docs, pdfBytes)
+        .then((result) => setVaultState(result === "ignorado" ? null : result))
+        .catch(() => setVaultState("falha"));
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [docs, ready]);
 
   function commit(next: ArchiveDoc[]) {
     const linked = linkDuplicates(next);
@@ -253,10 +291,17 @@ export function AcervoShell() {
   }
 
   function loadExamples() {
-    const linked = commit(fictionalArchive());
+    const linked = commit([...fictionalArchive(), ...docs.filter((doc) => !doc.example)]);
     setSelected(linked[0]?.acts[0]?.id ?? null);
     setView("lista");
-    setNote("Exemplos fictícios. Não são atos reais.");
+    setNote("Exemplos fictícios. Não entram no acervo guardado neste aparelho.");
+  }
+
+  async function forgetDevice() {
+    await clearVault();
+    commit(docs.filter((doc) => doc.example));
+    setVaultState(null);
+    setNote("Apagado deste aparelho. Um ZIP já baixado continua onde você o guardou.");
   }
 
   async function downloadZip() {
@@ -282,7 +327,7 @@ export function AcervoShell() {
         {busy ? <p className="mt-3 text-sm">Lendo o arquivo…</p> : null}
 
         {view === "home" ? (
-          <Home busy={busy} onPick={() => inputRef.current?.click()} onExample={loadExamples} hasDocs={docs.length > 0} onOpen={() => setView("lista")} />
+          <Home busy={busy} onPick={() => inputRef.current?.click()} onExample={loadExamples} stored={keepable(docs).length} onOpen={() => setView("lista")} />
         ) : null}
         {view === "preparar" ? (
           <Preparar
@@ -435,7 +480,7 @@ export function AcervoShell() {
             onRemote={() => setNote("IA remota está desativada. Nenhum documento sai deste aparelho.")}
           />
         ) : null}
-        {view === "dados" ? <Dados docs={docs} /> : null}
+        {view === "dados" ? <Dados docs={keepable(docs)} state={vaultState} onForget={() => void forgetDevice()} /> : null}
         {view !== "home" && view !== "preparar" && !pairs.length && view !== "processamento" && view !== "dados" ? null : null}
       </div>
       <input ref={inputRef} type="file" accept="application/pdf,.pdf,text/markdown,.md,text/plain" multiple className="hidden" onChange={(event) => { const files = event.target.files; if (files?.length) void takeFiles(files); event.target.value = ""; }} />
@@ -486,7 +531,7 @@ function Mark() {
   );
 }
 
-function Home({ busy, hasDocs, onPick, onExample, onOpen }: { busy: boolean; hasDocs: boolean; onPick: () => void; onExample: () => void; onOpen: () => void }) {
+function Home({ busy, stored, onPick, onExample, onOpen }: { busy: boolean; stored: number; onPick: () => void; onExample: () => void; onOpen: () => void }) {
   return (
     <div>
       <h1 className="mt-8 font-serif text-5xl leading-none font-medium text-balance">Do documento ao modelo.</h1>
@@ -507,11 +552,11 @@ function Home({ busy, hasDocs, onPick, onExample, onOpen }: { busy: boolean; has
         <div className="flex items-center gap-3">
           <FileText className="h-5 w-5 text-muted" />
           <span className="min-w-0 flex-1">
-            <span className="block truncate font-medium">{hasDocs ? "Acervo desta sessão" : "Modelos de exemplo.md"}</span>
-            <span className="block text-sm text-muted">{hasDocs ? "Aberto agora" : "Dados de exemplo"}</span>
+            <span className="block truncate font-medium">{stored ? "Acervo neste aparelho" : "Modelos de exemplo.md"}</span>
+            <span className="block text-sm text-muted">{stored ? `${stored} ${stored === 1 ? "documento guardado" : "documentos guardados"}` : "Dados de exemplo"}</span>
           </span>
-          <button type="button" onClick={hasDocs ? onOpen : onExample} className="text-sm font-semibold text-accent">
-            {hasDocs ? "Abrir" : "Abrir exemplo"} <ChevronRight className="inline h-4 w-4" />
+          <button type="button" onClick={stored ? onOpen : onExample} className="text-sm font-semibold text-accent">
+            {stored ? "Abrir" : "Abrir exemplo"} <ChevronRight className="inline h-4 w-4" />
           </button>
         </div>
       </div>
@@ -1077,20 +1122,29 @@ function Processamento({ note, onSave, onData, onCaderno, onRemote }: { note: st
   );
 }
 
-function Dados({ docs }: { docs: ArchiveDoc[] }) {
+function Dados({ docs, state, onForget }: { docs: ArchiveDoc[]; state: "ok" | "sem-pdf" | "falha" | null; onForget: () => void }) {
+  const where =
+    state === "falha"
+      ? "Não coube neste aparelho. Baixe o ZIP e guarde o arquivo onde quiser."
+      : state === "sem-pdf"
+        ? "O texto ficou neste aparelho. O PDF original não coube; a página física some ao fechar."
+        : "Fica neste navegador, neste aparelho. Não vai para o GitHub nem para outro telefone. Apagar os dados do site apaga o acervo.";
   return (
     <div>
-      <h1 className="mt-6 font-serif text-4xl leading-none font-medium">Dados nesta página</h1>
-      <p className="mt-2 text-sm text-muted">Nada disto foi enviado. Fechar a página apaga o acervo, salvo o ZIP que você baixar.</p>
-      {!docs.length ? <p className="mt-4 text-sm">Nenhum documento carregado.</p> : null}
+      <h1 className="mt-6 font-serif text-4xl leading-none font-medium">Neste aparelho</h1>
+      <p className="mt-2 text-sm text-muted">{where}</p>
+      {!docs.length ? <p className="mt-4 text-sm">Nenhum documento guardado. Converter um arquivo grava aqui na hora.</p> : null}
       <ul className="mt-4 space-y-2">
         {docs.map((doc) => (
           <li key={doc.id} className="rounded-md border border-line px-3 py-3 text-sm">
             <span className="block font-medium">{doc.filename}</span>
-            <span className="text-muted">{doc.acts.length} atos · {doc.hasPdf ? "PDF nesta sessão" : "sem PDF"}</span>
+            <span className="text-muted">{doc.acts.length} atos · {doc.hasPdf ? "com PDF" : "sem PDF"}</span>
           </li>
         ))}
       </ul>
+      {docs.length ? (
+        <button type="button" onClick={onForget} className="mt-6 w-full text-center text-sm font-semibold text-warn">Apagar deste aparelho</button>
+      ) : null}
     </div>
   );
 }
