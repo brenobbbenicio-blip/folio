@@ -95,6 +95,9 @@ export type ArchiveDoc = {
   history: { label: string; acts: Act[] }[];
   /** Peça de demonstração. Não entra no acervo guardado neste aparelho. */
   example?: boolean;
+  legacyId?: string;
+  /** Legacy ID collisions can make the surviving PDF association ambiguous. */
+  storageWarning?: string;
 };
 
 export type IngestInput = {

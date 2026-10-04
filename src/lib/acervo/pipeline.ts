@@ -5,7 +5,7 @@ import { segmentActs } from "./segment.ts";
 import { buildTemplate } from "./template.ts";
 import { UNKNOWN, type Act, type ArchiveDoc, type EvidenceField, type IngestInput } from "./types.ts";
 
-let docSeq = 0;
+import { archiveId } from "./identity.ts";
 
 function ownCnjs(text: string): string[] {
   const found: string[] = [];
@@ -97,7 +97,7 @@ export function linkDuplicates(docs: ArchiveDoc[]): ArchiveDoc[] {
   return docs;
 }
 
-export function ingestDocument(input: IngestInput, id = `d${(docSeq += 1).toString(36)}`): ArchiveDoc {
+export function ingestDocument(input: IngestInput, id = archiveId()): ArchiveDoc {
   const reading = input.reading.trim() + (input.reading.endsWith("\n") ? "" : "\n");
   const faithful = input.faithful.trim() + (input.faithful.endsWith("\n") ? "" : "\n");
   const quality = buildQuality(reading, {

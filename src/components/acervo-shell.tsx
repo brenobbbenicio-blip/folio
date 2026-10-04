@@ -35,7 +35,8 @@ import {
 import type { Act, ArchiveDoc, Improvement } from "@/lib/acervo/types";
 import { UNKNOWN } from "@/lib/acervo/types";
 import { archiveZip, type ZipParts } from "@/lib/acervo/zip";
-import { clearVault, keepable, loadVault, saveVault } from "@/lib/acervo/vault";
+import { clearVault, keepable, loadVault, VaultWriter, VaultConflictError, type VaultSnapshot } from "@/lib/acervo/vault";
+import { createBackup, readBackup, previewBackup, planRestore, MAX_BACKUP_BYTES, type BackupSource } from "@/lib/acervo/backup";
 import { saveBinaryFile, saveTextFile } from "@/lib/save-text-file";
 
 type View =
@@ -146,52 +147,111 @@ export function AcervoShell() {
   const [zipParts, setZipParts] = useState<Required<ZipParts>>({ models: true, sources: true, index: true, improvements: true, gaps: true });
   const [prefNote, setPrefNote] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
-  const [vaultState, setVaultState] = useState<"ok" | "sem-pdf" | "falha" | null>(null);
+  const [vaultState, setVaultState] = useState<"ok" | "salvando" | "falha" | "conflito" | null>(null);
+  const [vaultError, setVaultError] = useState<string | null>(null);
+  const [storedCount, setStoredCount] = useState(0);
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const [restore, setRestore] = useState<BackupSource | null>(null);
+  const [restorePolicy, setRestorePolicy] = useState<"keep" | "copy" | "replace">("keep");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [backupResult, setBackupResult] = useState<string | null>(null);
+  const restoreInput = useRef<HTMLInputElement>(null);
+  const writer = useRef<VaultWriter | null>(null);
+  const docsRef = useRef<ArchiveDoc[]>([]);
+  const blocked = useRef(false);
+  const saveNumber = useRef(0);
+  const lastSave = useRef<Promise<VaultSnapshot> | null>(null);
+  const mounted = useRef(true);
+  const loadNumber = useRef(0);
+  const pendingExtras = useRef<{ legacy?: VaultSnapshot["legacy"]; migrationWarnings?: string[] } | undefined>(undefined);
+
+  function adopt(snapshot: VaultSnapshot) {
+    retainPdfs([]);
+    for (const pdf of snapshot.pdfs) rememberPdf(pdf.id, pdf.data);
+    writer.current = new VaultWriter(snapshot);
+    pendingExtras.current = undefined;
+    docsRef.current = structuredClone(snapshot.docs);
+    setDocs(docsRef.current);
+    setStoredCount(snapshot.docs.length);
+    setWarnings(snapshot.migrationWarnings);
+    blocked.current = false;
+    setVaultError(null);
+    setVaultState("ok");
+    setReady(true);
+  }
+
+  async function reloadDevice() {
+    const attempt = ++loadNumber.current;
+    setBusy(true);
+    try {
+      // Wait for this tab's writes before explicitly replacing its in-memory view.
+      await writer.current?.flush().catch(() => undefined);
+      const snapshot = await loadVault();
+      if (!mounted.current || attempt !== loadNumber.current) return;
+      adopt(snapshot);
+      setRestore(null);
+      setNote(snapshot.docs.length ? "Acervo recuperado neste aparelho." : "Arquivo local aberto. Nenhum documento guardado.");
+    } catch (error) {
+      if (!mounted.current || attempt !== loadNumber.current) return;
+      blocked.current = true;
+      setVaultState("falha");
+      setVaultError(error instanceof Error ? error.message : "Não foi possível abrir o acervo. Nada foi substituído.");
+    } finally { if (mounted.current && attempt === loadNumber.current) setBusy(false); }
+  }
 
   useEffect(() => {
-    let cancel = false;
-    loadVault()
-      .then(({ docs: stored, pdfs }) => {
-        if (cancel) return;
-        if (stored.length) {
-          for (const pdf of pdfs) rememberPdf(pdf.id, pdf.data);
-          setDocs((current) => {
-            const fresh = current.filter((doc) => !stored.some((item) => item.id === doc.id));
-            return linkDuplicates([...fresh, ...stored]);
-          });
-          setNote("Acervo recuperado neste aparelho.");
-        }
-      })
-      .catch(() => {
-        if (!cancel) setNote("Este navegador não abriu o acervo guardado.");
-      })
-      .finally(() => {
-        if (!cancel) setReady(true);
-      });
-    return () => {
-      cancel = true;
-    };
+    mounted.current = true;
+    void reloadDevice();
+    return () => { mounted.current = false; loadNumber.current++; };
+    // Recovery never triggers an automatic save, especially after failure.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (!ready) return;
-    const timer = setTimeout(() => {
-      void saveVault(docs, pdfBytes)
-        .then((result) => setVaultState(result === "ignorado" ? null : result))
-        .catch(() => setVaultState("falha"));
-    }, 400);
-    return () => clearTimeout(timer);
-  }, [docs, ready]);
+    if (vaultState !== "salvando" && vaultState !== "falha" && vaultState !== "conflito") return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [vaultState]);
 
-  function commit(next: ArchiveDoc[]) {
-    const linked = linkDuplicates(next);
+  function persist(next: ArchiveDoc[], extras?: { legacy?: VaultSnapshot["legacy"]; migrationWarnings?: string[] }) {
+    const currentWriter = writer.current;
+    if (!currentWriter) throw new Error("Abra o arquivo local antes de alterar o acervo.");
+    const number = ++saveNumber.current;
+    setVaultState("salvando");
+    setBackupResult(null);
+    if (extras) pendingExtras.current = structuredClone(extras);
+    const operation = currentWriter.save(next, pdfBytes, pendingExtras.current);
+    lastSave.current = operation;
+    void operation.then((snapshot) => {
+      if (!mounted.current) return;
+      setStoredCount(snapshot.docs.length);
+      setWarnings(snapshot.migrationWarnings);
+      if (number === saveNumber.current) { pendingExtras.current = undefined; setVaultState("ok"); setVaultError(null); }
+    }).catch((error: unknown) => {
+      if (!mounted.current) return;
+      blocked.current = true;
+      setVaultState(error instanceof VaultConflictError ? "conflito" : "falha");
+      setVaultError(error instanceof Error ? error.message : "A gravação falhou. A última cópia foi preservada.");
+    });
+    return operation;
+  }
+
+  function commit(next: ArchiveDoc[], preserveLinks = false, extras?: { legacy?: VaultSnapshot["legacy"]; migrationWarnings?: string[] }) {
+    if (!writer.current || blocked.current) {
+      setNote("Alteração bloqueada: resolva a pendência do arquivo local antes de continuar.");
+      return docsRef.current;
+    }
+    const linked = preserveLinks ? structuredClone(next) : linkDuplicates(structuredClone(next));
     retainPdfs(linked.map((doc) => doc.id));
+    docsRef.current = linked;
     setDocs(linked);
+    void persist(linked, extras).catch(() => undefined);
     return linked;
   }
 
   function replace(doc: ArchiveDoc) {
-    commit(docs.map((item) => (item.id === doc.id ? doc : item)));
+    commit(docsRef.current.map((item) => (item.id === doc.id ? doc : item)));
   }
 
   const pairs = useMemo(() => docs.flatMap((doc) => doc.acts.map((act) => ({ doc, act }))), [docs]);
@@ -205,6 +265,7 @@ export function AcervoShell() {
   });
 
   async function takeFiles(list: FileList | File[]) {
+    if (!ready || blocked.current) return;
     setBusy(true);
     setNote(null);
     try {
@@ -238,7 +299,7 @@ export function AcervoShell() {
   }
 
   async function convert() {
-    if (!pending.length) return;
+    if (!pending.length || blocked.current || !ready) return;
     setBusy(true);
     setNote(null);
     try {
@@ -275,7 +336,8 @@ export function AcervoShell() {
         rememberPdf(archive.id, file.data);
         created.push(archive);
       }
-      const linked = commit([...created, ...docs]);
+      const linked = commit([...created, ...docsRef.current]);
+      await lastSave.current;
       setSelected(linked[0]?.acts[0]?.id ?? null);
       setPageAt(0);
       setExtractTab("pdf");
@@ -298,10 +360,64 @@ export function AcervoShell() {
   }
 
   async function forgetDevice() {
-    await clearVault();
-    commit(docs.filter((doc) => doc.example));
-    setVaultState(null);
-    setNote("Apagado deste aparelho. Um ZIP já baixado continua onde você o guardou.");
+    if (!writer.current || blocked.current) return;
+    setBusy(true);
+    try {
+      await writer.current.flush();
+      const snapshot = await clearVault(writer.current.snapshot);
+      adopt(snapshot);
+      setConfirmDelete(false);
+      setBackupResult(null);
+      setNote("Apagado deste aparelho. Sem lixeira ou desfazer. Somente um backup completo salvo antes poderá restaurar o acervo.");
+    } catch (error) {
+      blocked.current = true;
+      setVaultState(error instanceof VaultConflictError ? "conflito" : "falha");
+      setVaultError(error instanceof Error ? error.message : "Não foi possível apagar. Nenhuma exclusão foi confirmada.");
+    } finally { setBusy(false); }
+  }
+
+  function localSource(): BackupSource {
+    const snapshot = writer.current?.snapshot;
+    return { docs: keepable(docsRef.current), pdfs: keepable(docsRef.current).filter((doc) => doc.hasPdf).map((doc) => {
+      const data = pdfBytes(doc.id) ?? snapshot?.pdfs.find((pdf) => pdf.id === doc.id)?.data;
+      if (!data) throw new Error(`O PDF de ${doc.filename} está ausente. Não foi gerado um backup incompleto.`);
+      return { id: doc.id, data };
+    }), legacy: pendingExtras.current?.legacy ?? snapshot?.legacy ?? null, migrationWarnings: pendingExtras.current?.migrationWarnings ?? warnings };
+  }
+
+  async function downloadBackup() {
+    setBusy(true);
+    try {
+      // On a conflict, deliberately preserve this tab's pending local changes.
+      const bytes = await createBackup(structuredClone(localSource()));
+      const result = await saveBinaryFile(`folio-${new Date().toISOString().slice(0, 10)}.folio.json`, bytes, "application/json");
+      setBackupResult(result === "downloaded" ? "Backup completo baixado. Confira o arquivo antes de apagar." : result === "shared" ? "Backup entregue à folha do sistema. Confirme que foi salvo em Arquivos antes de apagar." : result === "cancelled" ? "Backup cancelado; nada foi confirmado como salvo." : "O backup não foi salvo. O acervo não foi apagado.");
+    } catch (error) { setBackupResult(error instanceof Error ? error.message : "Não foi possível criar o backup."); }
+    finally { setBusy(false); }
+  }
+
+  async function inspectBackup(file: File) {
+    setBusy(true); setRestore(null);
+    try {
+      if (file.size > MAX_BACKUP_BYTES) throw new Error("O backup excede 200 MiB. Nada foi importado.");
+      const incoming = await readBackup(new Uint8Array(await file.arrayBuffer()));
+      setRestore(incoming); setRestorePolicy("keep"); setNote("Backup validado. Confira a prévia e os conflitos antes de restaurar."); setView("dados");
+    } catch (error) { setNote(error instanceof Error ? error.message : "Backup inválido. Nada foi importado."); }
+    finally { setBusy(false); }
+  }
+
+  async function restoreBackup() {
+    if (!restore || !writer.current || blocked.current) return;
+    setBusy(true);
+    try {
+      await writer.current.flush();
+      const next = planRestore(localSource(), restore, restorePolicy);
+      for (const pdf of next.pdfs) rememberPdf(pdf.id, pdf.data);
+      commit(next.docs, true, { legacy: next.legacy ?? null, migrationWarnings: next.migrationWarnings ?? [] });
+      await lastSave.current;
+      setRestore(null); setNote("Backup restaurado e guardado neste aparelho.");
+    } catch (error) { setNote(error instanceof Error ? error.message : "Restauração não confirmada. A cópia anterior foi preservada."); }
+    finally { setBusy(false); }
   }
 
   async function downloadZip() {
@@ -324,10 +440,12 @@ export function AcervoShell() {
       <div className="mx-auto flex min-h-dvh w-full max-w-md flex-col px-5 pt-6 pb-28">
         <Top view={view} saved={current ? saved.includes(current.act.id) : false} onBack={() => BACK[view] && setView(BACK[view])} onGear={() => setView("processamento")} onPlus={() => setView("home")} onSave={() => current && setSaved((ids) => (ids.includes(current.act.id) ? ids.filter((id) => id !== current.act.id) : [...ids, current.act.id]))} />
         {note ? <p className="mt-3 text-sm text-muted">{note}</p> : null}
+        <p role="status" aria-live="polite" className="mt-3 text-sm text-muted">{vaultState === "salvando" ? "Gravando alterações… Aguarde a confirmação antes de fechar." : vaultState === "ok" ? "Alterações guardadas neste aparelho." : !ready && !vaultError ? "Abrindo o arquivo local…" : null}</p>
+        {vaultError ? <div role="alert" className="mt-3 rounded-md border border-line p-3 text-sm"><p>{vaultError}</p><p className="mt-2">A cópia já guardada não foi substituída. Alterações ainda abertas podem ser preservadas em um backup completo.</p>{ready ? <button type="button" onClick={() => void downloadBackup()} disabled={busy}>Baixar backup das alterações</button> : null}<button type="button" onClick={() => { if (!ready || window.confirm("Recarregar substitui as alterações ainda não guardadas nesta aba. Faça um backup delas antes. Continuar?")) void reloadDevice(); }}>Recarregar acervo guardado</button>{vaultState === "falha" && ready ? <button type="button" disabled={busy} onClick={() => { writer.current?.retry(); blocked.current = false; void persist(docsRef.current).catch(() => undefined); }}>Tentar guardar novamente</button> : null}</div> : null}
         {busy ? <p className="mt-3 text-sm">Lendo o arquivo…</p> : null}
 
         {view === "home" ? (
-          <Home busy={busy} onPick={() => inputRef.current?.click()} onExample={loadExamples} stored={keepable(docs).length} onOpen={() => setView("lista")} />
+          <Home busy={busy || !ready || blocked.current} onPick={() => inputRef.current?.click()} onExample={loadExamples} stored={storedCount} onOpen={() => setView("lista")} />
         ) : null}
         {view === "preparar" ? (
           <Preparar
@@ -335,7 +453,7 @@ export function AcervoShell() {
             options={options}
             password={password}
             askPassword={askPassword}
-            busy={busy}
+            busy={busy || !ready || blocked.current}
             onPassword={setPassword}
             onOptions={setOptions}
             onConvert={() => void convert()}
@@ -480,10 +598,22 @@ export function AcervoShell() {
             onRemote={() => setNote("IA remota está desativada. Nenhum documento sai deste aparelho.")}
           />
         ) : null}
-        {view === "dados" ? <Dados docs={keepable(docs)} state={vaultState} onForget={() => void forgetDevice()} /> : null}
+        {view === "dados" ? <Dados docs={keepable(docs)} busy={busy || !ready || vaultState === "salvando"} blocked={blocked.current} warnings={warnings} onBackup={() => void downloadBackup()} onRestore={() => restoreInput.current?.click()} onForget={() => setConfirmDelete(true)} /> : null}
+        {view === "dados" && backupResult ? <p role="status" className="mt-3 text-sm">{backupResult}</p> : null}
+        {view === "dados" && restore ? <section aria-label="Prévia da restauração" className="mt-4 rounded-md border border-line p-3 text-sm">
+          <h2 className="font-semibold">Prévia da restauração</h2>
+          <p>{previewBackup(docs, restore).documents} documentos · {previewBackup(docs, restore).pdfs} PDFs · {previewBackup(docs, restore).conflicts.length} conflitos por ID.</p>
+          {previewBackup(docs, restore).conflicts.map((item) => <p key={item.id}>{item.filename} conflita com {item.currentFilename}.</p>)}
+          <label className="mt-3 block">Como resolver conflitos<select aria-label="Política de restauração" className="mt-1 w-full rounded-md border border-line bg-surface p-2" value={restorePolicy} onChange={(event) => setRestorePolicy(event.target.value as typeof restorePolicy)}><option value="keep">Manter a versão atual dos itens em conflito</option><option value="copy">Importar os conflitos como cópias separadas</option><option value="replace">Substituir somente os itens em conflito</option></select></label>
+          <p className="mt-2">{restorePolicy === "replace" ? "A versão atual dos itens conflitantes será substituída. Faça um backup antes." : "Os outros documentos atuais serão preservados."}</p>
+          {restore.migrationWarnings?.map((warning, index) => <p key={index}>{warning}</p>)}
+          <button type="button" disabled={busy || blocked.current} onClick={() => void restoreBackup()} className="mt-3 rounded-md bg-accent p-3 font-semibold text-accent-fg">Confirmar restauração</button><button type="button" disabled={busy} onClick={() => setRestore(null)}>Cancelar restauração</button>
+        </section> : null}
+        {view === "dados" && confirmDelete ? <section role="dialog" aria-label="Confirmar exclusão do acervo" className="mt-4 rounded-md border border-line p-3 text-sm"><h2 className="font-semibold">Apagar todo o acervo deste navegador?</h2><p>Serão apagados textos, PDFs, classificações, histórico e salvaguardas legadas. Não há lixeira ou desfazer. O ZIP de textos não é backup completo.</p><button type="button" disabled={busy} onClick={() => void downloadBackup()}>Baixar backup antes de apagar</button>{backupResult ? <p>{backupResult}</p> : null}<button type="button" disabled={busy || blocked.current || vaultState === "salvando"} onClick={() => void forgetDevice()} className="mt-3 rounded-md border border-line p-3 font-semibold text-warn">Confirmar apagar todo o acervo</button><button type="button" disabled={busy} onClick={() => setConfirmDelete(false)}>Cancelar exclusão</button></section> : null}
         {view !== "home" && view !== "preparar" && !pairs.length && view !== "processamento" && view !== "dados" ? null : null}
       </div>
-      <input ref={inputRef} type="file" accept="application/pdf,.pdf,text/markdown,.md,text/plain" multiple className="hidden" onChange={(event) => { const files = event.target.files; if (files?.length) void takeFiles(files); event.target.value = ""; }} />
+      <input ref={restoreInput} type="file" accept=".folio.json,application/json" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; if (file) void inspectBackup(file); event.target.value = ""; }} />
+      <input ref={inputRef} disabled={!ready || blocked.current || busy} type="file" accept="application/pdf,.pdf,text/markdown,.md,text/plain" multiple className="hidden" onChange={(event) => { const files = event.target.files; if (files?.length) void takeFiles(files); event.target.value = ""; }} />
       <Nav tab={tabOf(view)} onTab={(tab) => setView(tab === "converter" ? "home" : tab === "acervo" ? "lista" : tab === "revisao" ? "melhorias" : "processamento")} />
     </div>
   );
@@ -686,7 +816,7 @@ function Extracao({
         <p>Página {slice?.page ?? "—"}{slices.length ? ` de ${slices.length}` : ""}</p>
         <button type="button" aria-label="Próxima página" onClick={() => onPage(Math.min(pageAt + 1, Math.max(slices.length - 1, 0)))} className="grid h-11 w-11 place-items-center rounded-md border border-line"><ChevronRight className="h-5 w-5" /></button>
       </div>
-      {tab === "pdf" && pdfBytes(pair.doc.id) && page ? <PdfOrigin docId={pair.doc.id} pages={[page]} /> : null}
+      {tab === "pdf" && pdfBytes(pair.doc.id) && page ? <PdfOrigin warning={pair.doc.storageWarning} docId={pair.doc.id} pages={[page]} /> : null}
       <article className="mt-3 rounded-md bg-paper p-5 text-ink">
         {tab === "md" ? (
           <pre className="font-mono text-xs whitespace-pre-wrap">{slice?.text || "Página sem texto extraído."}</pre>
@@ -1122,29 +1252,19 @@ function Processamento({ note, onSave, onData, onCaderno, onRemote }: { note: st
   );
 }
 
-function Dados({ docs, state, onForget }: { docs: ArchiveDoc[]; state: "ok" | "sem-pdf" | "falha" | null; onForget: () => void }) {
-  const where =
-    state === "falha"
-      ? "Não coube neste aparelho. Baixe o ZIP e guarde o arquivo onde quiser."
-      : state === "sem-pdf"
-        ? "O texto ficou neste aparelho. O PDF original não coube; a página física some ao fechar."
-        : "Fica neste navegador, neste aparelho. Não vai para o GitHub nem para outro telefone. Apagar os dados do site apaga o acervo.";
+function Dados({ docs, busy, blocked, warnings, onForget, onBackup, onRestore }: { docs: ArchiveDoc[]; busy: boolean; blocked: boolean; warnings: string[]; onForget: () => void; onBackup: () => void; onRestore: () => void }) {
   return (
     <div>
       <h1 className="mt-6 font-serif text-4xl leading-none font-medium">Neste aparelho</h1>
-      <p className="mt-2 text-sm text-muted">{where}</p>
-      {!docs.length ? <p className="mt-4 text-sm">Nenhum documento guardado. Converter um arquivo grava aqui na hora.</p> : null}
-      <ul className="mt-4 space-y-2">
-        {docs.map((doc) => (
-          <li key={doc.id} className="rounded-md border border-line px-3 py-3 text-sm">
-            <span className="block font-medium">{doc.filename}</span>
-            <span className="text-muted">{doc.acts.length} atos · {doc.hasPdf ? "com PDF" : "sem PDF"}</span>
-          </li>
-        ))}
-      </ul>
-      {docs.length ? (
-        <button type="button" onClick={onForget} className="mt-6 w-full text-center text-sm font-semibold text-warn">Apagar deste aparelho</button>
-      ) : null}
+      <p className="mt-2 text-sm text-muted">O acervo fica neste navegador e neste aparelho. Não vai para o GitHub nem para outro telefone. Apagar os dados do site apaga o acervo.</p>
+      <p className="mt-3 text-sm text-muted">Guarde também um backup completo fora do site. Ele inclui os PDFs originais e o estado do acervo. O ZIP de exportação contém somente textos, modelos e índices.</p>
+      <p className="mt-2 text-sm text-muted">O backup não é criptografado. Salve em local protegido. No iPhone, confirme o salvamento em Arquivos.</p>
+      {warnings.map((warning, index) => <p key={index} role="alert" className="mt-3 text-sm text-warn">{warning}</p>)}
+      {!docs.length ? <p className="mt-4 text-sm">Nenhum documento neste acervo. Uma alteração só está guardada após a confirmação da gravação.</p> : null}
+      <ul className="mt-4 space-y-2">{docs.map((doc) => <li key={doc.id} className="rounded-md border border-line px-3 py-3 text-sm"><span className="block font-medium">{doc.filename}</span><span className="text-muted">{doc.acts.length} atos · {doc.hasPdf ? "com PDF" : "sem PDF"}</span>{doc.storageWarning ? <p className="mt-2 text-warn">{doc.storageWarning}</p> : null}</li>)}</ul>
+      <button type="button" disabled={busy} onClick={onBackup} className="mt-4 h-12 w-full rounded-md border border-line font-semibold">Baixar backup completo</button>
+      <button type="button" disabled={busy || blocked} onClick={onRestore} className="mt-3 h-12 w-full rounded-md border border-line font-semibold">Restaurar backup completo</button>
+      {docs.length ? <button type="button" disabled={busy || blocked} onClick={onForget} className="mt-6 w-full text-center text-sm font-semibold text-warn">Apagar deste aparelho</button> : null}
     </div>
   );
 }

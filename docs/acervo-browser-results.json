@@ -1,0 +1,111 @@
+{
+  "runAt": "2026-10-04T16:19:25.397Z",
+  "origin": "http://127.0.0.1:8080",
+  "syntheticDataOnly": true,
+  "results": [
+    {
+      "name": "gravação atômica, reabertura e novas identidades",
+      "status": "PASS",
+      "evidence": "Texto, PDF, revisão e histórico idênticos; nova identidade distinta."
+    },
+    {
+      "name": "falhas de escrita e quota preservam bytes e estado",
+      "status": "PASS",
+      "evidence": [
+        "QuotaExceededError",
+        "UnknownError"
+      ]
+    },
+    {
+      "name": "PDF ausente: reutiliza cópia existente e rejeita novo incompleto",
+      "status": "PASS",
+      "evidence": "Cópia guardada reutilizada; nova peça sem bytes recusada sem alterar acervo."
+    },
+    {
+      "name": "PDF faltante no banco v2 bloqueia leitura sem regravar",
+      "status": "PASS",
+      "evidence": "Leitura incompleta rejeitada; nenhuma gravação corretiva destrutiva."
+    },
+    {
+      "name": "duas abas reais: CAS impede sobrescrita e ressurreição",
+      "status": "PASS",
+      "evidence": "Abas separadas compartilharam IndexedDB; escritas obsoletas foram recusadas após inclusão e exclusão."
+    },
+    {
+      "name": "geração impede escrita obsoleta depois de apagar banco",
+      "status": "PASS",
+      "evidence": "Token de geração bloqueou snapshot do banco anterior."
+    },
+    {
+      "name": "migração v1 preserva colisões, bytes brutos e alertas",
+      "status": "PASS",
+      "evidence": {
+        "ids": [
+          "doc-1",
+          "doc-95412ca6-016c-4b8b-8bd7-a52679ae342a"
+        ],
+        "legacyDocs": 2,
+        "legacyPdfs": 2,
+        "activePdfs": 2,
+        "warnings": 2,
+        "allBytes": true
+      }
+    },
+    {
+      "name": "backup íntegro com histórico e hashes; corrupções recusadas",
+      "status": "PASS",
+      "evidence": "Hashes SHA-256 e estado completo conferidos; conteúdo adulterado recusado; origem apagada."
+    },
+    {
+      "name": "restaurar em outro perfil isolado: estado e PDF idênticos",
+      "status": "PASS",
+      "evidence": "Perfil novo começou vazio e recebeu acervo completo idêntico."
+    },
+    {
+      "name": "restauração: políticas explícitas manter, copiar e substituir",
+      "status": "PASS",
+      "evidence": {
+        "keep": "Versão atual fictícia",
+        "copy": 2,
+        "unique": 2,
+        "replace": "# DESPACHO FICTÍCIO\nTexto exclusivamente sintético de teste.\n",
+        "expected": "# DESPACHO FICTÍCIO\nTexto exclusivamente sintético de teste.\n"
+      }
+    },
+    {
+      "name": "interface: falha transitória de abertura não grava acervo vazio",
+      "status": "PASS",
+      "evidence": "Interface bloqueou importação e preservou documento/PDF anteriores."
+    },
+    {
+      "name": "interface: importação real, confirmação, fechamento imediato e reabertura",
+      "status": "PASS",
+      "evidence": "Duas importações na interface, em aberturas diferentes; nenhuma colisão ou perda após confirmação."
+    },
+    {
+      "name": "interface: converter PDF fictício válido e preservar original",
+      "status": "PASS",
+      "evidence": "PDF sintético válido convertido pela interface; bytes originais íntegros no IndexedDB."
+    },
+    {
+      "name": "interface: prévia, políticas, backup e confirmação de exclusão",
+      "status": "PASS",
+      "evidence": "Prévia e manter confirmados; cancelamento preservou dados; backup baixado; exclusão explícita apagou somente após confirmação. Desktop/mobile sem overflow."
+    },
+    {
+      "name": "encerrar e reabrir processo Chromium com perfil persistente",
+      "status": "PASS",
+      "evidence": "Processo encerrado após commit e reiniciado; estado integral recuperado."
+    },
+    {
+      "name": "Firefox: cenários de persistência",
+      "status": "NÃO VERIFICADO",
+      "reason": "Binário não disponível; nenhum download repetido."
+    },
+    {
+      "name": "WebKit: cenários de persistência",
+      "status": "NÃO VERIFICADO",
+      "reason": "Binário não disponível; nenhum download repetido."
+    }
+  ]
+}

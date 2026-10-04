@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { pdfBytes } from "@/lib/acervo/pdf-store";
 
-export function PdfOrigin({ docId, pages }: { docId: string; pages: number[] }) {
+export function PdfOrigin({ docId, pages, warning }: { docId: string; pages: number[]; warning?: string }) {
   const bytes = pdfBytes(docId);
   const [page, setPage] = useState(pages[0] ?? 0);
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +58,7 @@ export function PdfOrigin({ docId, pages }: { docId: string; pages: number[] }) 
   }
   return (
     <div className="mt-3">
+      {warning ? <p role="alert" className="mb-3 text-sm text-warn">{warning}</p> : null}
       <div className="flex flex-wrap gap-2">
         {pages.map((item) => (
           <button
