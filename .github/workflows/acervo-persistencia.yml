@@ -1,0 +1,86 @@
+name: Persistência do acervo
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: acervo-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  persistencia:
+    name: Acervo — Chromium, Firefox e WebKit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CI: "true"
+      VITE_AUTH_ENABLED: "false"
+      FOLIO_TEST_URL: http://127.0.0.1:8080
+      FOLIO_TEST_BROWSERS: chromium,firefox,webkit
+      FOLIO_REQUIRED_BROWSERS: chromium,firefox,webkit
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Preparar evidências desta execução
+        run: |
+          mkdir -p .ci-artifacts
+          # Nunca apresentar o relatório histórico versionado como resultado deste job.
+          rm -f docs/acervo-browser-results.json
+      - name: Instalar dependências do lockfile
+        run: npm ci
+      - name: Instalar browsers e dependências do sistema
+        run: npx --no-install playwright install --with-deps chromium firefox webkit
+      - name: Verificar TypeScript e testes de persistência
+        run: |
+          npm run typecheck
+          node --experimental-strip-types --test src/lib/acervo/*.test.ts
+          node --test scripts/acervo-browser-tests.test.mjs
+      - name: Executar suíte com documentos fictícios
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run dev > .ci-artifacts/server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          ready=false
+          for attempt in {1..60}; do
+            if curl --fail --silent "$FOLIO_TEST_URL" > /dev/null; then
+              ready=true
+              break
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              cat .ci-artifacts/server.log
+              exit 1
+            fi
+            sleep 1
+          done
+          if [[ "$ready" != true ]]; then
+            cat .ci-artifacts/server.log
+            echo 'Servidor de teste indisponível após 60 segundos.' >&2
+            exit 1
+          fi
+          # pipefail preserva o código de saída da suíte, mesmo usando tee.
+          npm run test:acervo:browser 2>&1 | tee .ci-artifacts/browser.log
+      - name: Reter relatório e logs, inclusive em falha
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: acervo-persistencia-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            docs/acervo-browser-results.json
+            .ci-artifacts/*.log
+            screenshots/folio-persistencia-*.png
+          if-no-files-found: error
+          retention-days: 30
