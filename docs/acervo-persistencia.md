@@ -1,5 +1,9 @@
 # Persistência e recuperação do acervo
 
+CI de persistência e cobertura completa por motor: [acervo-ci.md](acervo-ci.md).
+O registro abaixo preserva a validação histórica de 04/10/2026; resultados
+novos devem ser conferidos nos artefatos de cada execução do CI.
+
 ## Especificação e escopo (SDD/ESDD)
 
 Base examinada: `3d1aa5c5cb8510eb08b924119184453617baecfc`, ainda HEAD de `main` em 04/10/2026. Não havia correções posteriores. Foram lidos `AGENTS.md`, `AGENTS.project.md`, o perfil de engenharia, as instruções e o código atual. Esta proposta não publica o aplicativo nem altera autenticação, documentos reais ou serviços externos.

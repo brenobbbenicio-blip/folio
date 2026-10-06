@@ -29,6 +29,15 @@ npm test
 npm run typecheck
 ```
 
+### Persistência
+
+O CI instala Chromium, Firefox e WebKit e executa a suíte de persistência com
+documentos fictícios, retendo relatório e logs por 30 dias. Consulte
+[a cobertura, os critérios e as evidências](docs/acervo-ci.md).
+WebKit automatizado não equivale a validar Safari/iPhone real.
+
 ## Limites
 
-Não há OCR, classificação por IA nem taxonomia oficial do PJe. O acervo aberto na sessão só permanece se for exportado em ZIP.
+Não há OCR, classificação por IA nem taxonomia oficial do PJe. O acervo usa
+IndexedDB no navegador; a recuperação após remoção dos dados exige backup
+completo previamente exportado. O ZIP de textos não substitui esse backup.
